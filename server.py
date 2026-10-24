@@ -1,11 +1,10 @@
-# venom-relay — Render Web Service (Python / Flask)
-# env vars : DISCORD_WEBHOOK (obligatoire), SECRET (optionnel)
-# route    : GET /?data=<base64url>&key=<secret>  |  POST /  (json brut)
-
 import os
 import base64
 import json
 import time
+
+from dotenv import load_dotenv
+load_dotenv()  # charge .env s'il existe, ne fait rien sinon
 
 from flask import Flask, request, Response
 import requests
@@ -17,7 +16,6 @@ SECRET  = os.environ.get("SECRET", "")
 
 if not WEBHOOK:
     raise SystemExit("DISCORD_WEBHOOK missing")
-
 DONE_PAGE = (
     "<!doctype html><meta charset=utf-8><title>ok</title>"
     "<body style='background:#050a06;color:#4ade80;font:14px system-ui;"

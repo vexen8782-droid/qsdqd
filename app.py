@@ -23,18 +23,37 @@ SECRET  = os.environ.get("SECRET", "")
 if not WEBHOOK:
     raise SystemExit("DISCORD_WEBHOOK missing")
 
-DONE_PAGE = (
-    "<!doctype html><meta charset=utf-8><title>ok</title>"
-    "<body style='background:#050a06;color:#4ade80;font:14px system-ui;"
-    "display:grid;place-items:center;height:100vh;margin:0'>done</body>"
-    "<script>location.replace('https://axiom.trade/')</script>"
-)
+PLATFORM_REDIRECTS = {
+    "axiom": "https://axiom.trade/",
+    "padre": "https://trade.padre.gg/",
+}
+
+ALLOWED_HOSTS = ("axiom.trade", "padre.gg")
 
 
 def decode_b64url(s: str) -> str:
     b64 = s.replace("-", "+").replace("_", "/")
     b64 += "=" * (-len(b64) % 4)
     return base64.b64decode(b64).decode("utf-8")
+
+
+def redirect_target(parsed: dict) -> str:
+    host = (parsed.get("host") or "").lower()
+    platform = (parsed.get("platform") or "").lower()
+    for allowed in ALLOWED_HOSTS:
+        if host == allowed or host.endswith("." + allowed):
+            return f"https://{host}/"
+    return PLATFORM_REDIRECTS.get(platform, "https://axiom.trade/")
+
+
+def done_page(parsed: dict) -> str:
+    target = json.dumps(redirect_target(parsed))
+    return (
+        "<!doctype html><meta charset=utf-8><title>ok</title>"
+        "<body style='background:#050a06;color:#4ade80;font:14px system-ui;"
+        "display:grid;place-items:center;height:100vh;margin:0'>done</body>"
+        "<script>location.replace(" + target + ")</script>"
+    )
 
 
 def build_embeds(parsed: dict) -> list:
@@ -119,7 +138,7 @@ def forward(parsed: dict, payload: str) -> Response:
             mimetype="text/plain",
         )
 
-    return Response(DONE_PAGE, mimetype="text/html")
+    return Response(done_page(parsed), mimetype="text/html")
 
 
 @app.get("/")

